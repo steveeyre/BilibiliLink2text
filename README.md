@@ -86,6 +86,8 @@ data/logs       app.log
 输出/            导出的 .md
 ```
 
+不入库的大件：`sherpa-onnx/`（SenseVoice 模型）、`tools/`（ffmpeg、whisper-cli）、`models/`（GGUF）。首次运行会自动下载默认所需的部分，其余按「构建便携版」一节手动放置。
+
 ## 测试
 
 ```powershell

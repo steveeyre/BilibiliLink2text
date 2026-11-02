@@ -72,7 +72,8 @@ def _selftest() -> int:
         eng.ensure_ready()
         segs = eng.transcribe(wav)
         eng.release()
-        out.write_text(f"SELFTEST OK engine={eng.engine_label} segments={len(segs)}", encoding="utf-8")
+        out.write_text(f"SELFTEST OK v{__version__} engine={eng.engine_label} "
+                       f"segments={len(segs)}", encoding="utf-8")
         return 0
     except Exception as e:  # noqa: BLE001
         out.write_text(f"SELFTEST FAIL: {e!r}", encoding="utf-8")

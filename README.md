@@ -3,7 +3,7 @@
 把 B 站视频转成**校对过的文字稿**：字幕 / 本地语音转写 → AI 校对 → 章节化 → 总结 → 导出 Markdown。
 Windows 桌面应用（PySide6），模型可全部本地运行，也可接任意 OpenAI 兼容 API。
 
-许可证：MIT
+许可证：MIT　仓库：<https://github.com/steveeyre/BilibiliLink2text>
 
 <p align="center"><img src="assets/icon.png" width="120" alt="icon"></p>
 
@@ -27,8 +27,8 @@ Windows 桌面应用（PySide6），模型可全部本地运行，也可接任�
 ## 安装运行
 
 ```powershell
-git clone <your-repo-url> BiliLink2Text
-cd BiliLink2Text
+git clone https://github.com/steveeyre/BilibiliLink2text.git
+cd BilibiliLink2text
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt

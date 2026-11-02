@@ -1,0 +1,32 @@
+# 本地数据与密钥（含 DPAPI 加密的 API Key / Cookies），切勿提交
+config.json
+config.portable.json
+*.corrupt.json
+*.bak.json
+
+# 运行产物与中间文件
+data/
+输出/
+output/
+dist/
+build/
+_obsolete/
+
+# 模型与二进制（体积大，按 README 说明自行下载或本地放置）
+tools/
+models/
+sherpa-onnx/
+llama-cpp/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv*/
+venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

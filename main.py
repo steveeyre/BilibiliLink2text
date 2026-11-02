@@ -4,10 +4,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from bili import __version__
-from bili.config import load_settings, log_file, save_settings
+from bili.config import load_settings, log_file, resource_path, save_settings
 from bili.gui.local_model_dialog import LocalModelDialog
 from bili.gui.main_window import MainWindow
 from bili.gui.theme import apply_theme
@@ -101,6 +102,9 @@ def main():
     _install_qt_log_handler()
     app.setApplicationName("BiliLink2Text")
     app.setApplicationVersion(__version__)
+    icon = resource_path("assets/icon.png")
+    if icon.exists():
+        app.setWindowIcon(QIcon(str(icon)))
     apply_theme(app)
     settings = load_settings()
     _maybe_pick_local_model(app, settings)

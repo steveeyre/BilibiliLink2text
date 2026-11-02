@@ -33,6 +33,12 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def resource_path(rel: str) -> Path:
+    """只读资源（图标等）：打包后在 _internal/，源码运行时在程序目录。"""
+    base = Path(getattr(sys, "_MEIPASS", app_dir()))
+    return base / rel
+
+
 def config_file() -> Path:
     return app_dir() / "config.json"
 

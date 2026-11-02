@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec: BiliLink2Text (onedir, windowed)
+import os
+
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 datas, binaries, hiddenimports = [], [], []
@@ -9,6 +11,13 @@ for pkg in ("yt_dlp", "sherpa_onnx", "onnxruntime"):
     datas += d
     binaries += b
     hiddenimports += h
+
+# 窗口图标：运行时由 config.resource_path("assets/icon.png") 读取
+ICON_PNG = os.path.join(SPECPATH, "assets", "icon.png")
+if os.path.exists(ICON_PNG):
+    datas.append((ICON_PNG, "assets"))
+# exe 图标：多尺寸 .ico，缺失时保留默认图标而不是构建失败
+ICON_ICO = os.path.join(SPECPATH, "assets", "icon.ico")
 
 a = Analysis(
     ["main.py"],
@@ -36,6 +45,7 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
+    icon=ICON_ICO if os.path.exists(ICON_ICO) else None,
 )
 
 coll = COLLECT(

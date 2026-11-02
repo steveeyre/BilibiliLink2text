@@ -3,6 +3,8 @@
 把 B 站视频转成**校对过的文字稿**：字幕 / 本地语音转写 → AI 校对 → 章节化 → 总结 → 导出 Markdown。
 Windows 桌面应用（PySide6），模型可全部本地运行，也可接任意 OpenAI 兼容 API。
 
+许可证：MIT
+
 <p align="center"><img src="assets/icon.png" width="120" alt="icon"></p>
 
 ## 功能
@@ -90,7 +92,7 @@ data/logs       app.log
 python -m unittest discover -s tests
 ```
 
-覆盖文本处理、配置加密与迁移、缓存、下载器取消、LLM 分块 / map-reduce / 章节切分、诊断信息等，共 114 项。
+覆盖文本处理、配置加密与迁移、缓存、下载器取消、LLM 分块 / map-reduce / 章节切分、诊断信息等，共 120 项。
 
 ## 构建便携版
 
@@ -122,5 +124,4 @@ pyinstaller BiliLink2Text.spec --noconfirm --clean
 
 ## 许可证
 
-尚未添加 LICENSE。在明确许可证之前，默认保留所有权利（All rights reserved）。
-如计划以 MIT / Apache-2.0 / GPL-3.0 发布，请在仓库根目录补上对应 LICENSE 文件。
+本项目采用 [MIT 许可证](LICENSE)。© 2026 steveeyre

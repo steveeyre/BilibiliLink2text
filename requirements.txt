@@ -3,3 +3,8 @@ yt-dlp>=2025.1.1
 sherpa-onnx>=1.10.0
 openai>=1.40
 requests>=2.31
+pypinyin>=0.51
+
+# 非 Windows：优先系统钥匙串，其次本地密钥文件（Fernet）加密敏感字段
+keyring>=24; sys_platform != "win32"
+cryptography>=42; sys_platform != "win32"

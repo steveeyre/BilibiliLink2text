@@ -167,7 +167,11 @@ def process_video(url: str, settings: Settings,
             raise PipelineError("未获得任何转写文本")
         lap("获取文本")
 
-        # 替换词典在合并段落之前生效：确定性修正，比让模型猜同音字可靠
+        # 专有名词同音纠错（SenseVoice 无热词，用它兜底），再跑替换词典；
+        # 两者都在合并段落之前生效：确定性修正，比让模型猜同音字可靠
+        terms = glossary.terms_from_settings(settings.glossary_terms)
+        if terms and getattr(settings, "glossary_fuzzy", True):
+            segments = glossary.fuzzy_fix_segments(segments, terms)
         segments = glossary.apply_rules_to_segments(
             segments, glossary.rules_from_settings(settings.replace_rules))
         if not segments:

@@ -109,6 +109,116 @@ COOKIE_BROWSERS = ["edge", "chrome", "firefox"]
 # 落盘加密的敏感字段（内存中 Settings 仍为明文，用法不变）
 SECRET_FIELDS = ("api_key", "fine_key", "cookies_string")
 _DPAPI_PREFIX = "DPAPI:"
+_KEYRING_PREFIX = "KEYRING:"
+_LOCAL_PREFIX = "LOCAL:"
+_SECRET_PREFIXES = (_DPAPI_PREFIX, _KEYRING_PREFIX, _LOCAL_PREFIX)
+_PLAINTEXT_LABEL = "明文"
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _keyring_module():
+    """可选后端：非 Windows 优先用系统钥匙串（需 pip install keyring）。"""
+    try:
+        import keyring
+        return keyring
+    except Exception:
+        return None
+
+
+def _cryptography_available() -> bool:
+    try:
+        import cryptography.fernet  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _local_key() -> Optional[bytes]:
+    """兜底加密密钥：放在 data/ 下并尽量收紧权限，不让 config.json 单独携带明文。"""
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:
+        return None
+    kf = data_dir() / "secret.key"
+    try:
+        if kf.exists():
+            key = kf.read_bytes().strip()
+            if len(key) >= 32:
+                return key
+        key = Fernet.generate_key()
+        kf.write_bytes(key)
+        try:
+            os.chmod(kf, 0o600)
+        except OSError:
+            pass
+        return key
+    except Exception:
+        return None
+
+
+def _local_protect(plain: str) -> Optional[str]:
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:
+        return None
+    key = _local_key()
+    if not key:
+        return None
+    try:
+        token = Fernet(key).encrypt(plain.encode("utf-8")).decode("ascii")
+        return _LOCAL_PREFIX + token
+    except Exception:
+        return None
+
+
+def _local_unprotect(stored: str) -> Optional[str]:
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:
+        return None
+    key = _local_key()
+    if not key:
+        return None
+    try:
+        raw = stored[len(_LOCAL_PREFIX):].encode("ascii")
+        return Fernet(key).decrypt(raw).decode("utf-8")
+    except Exception:
+        return None
+
+
+def _protect(field: str, plain: str) -> Optional[str]:
+    """按平台选择加密后端；全部不可用时返回 None（调用方回退明文）。"""
+    if not plain:
+        return None
+    if _is_windows():
+        return _dpapi_protect(plain)
+    kr = _keyring_module()
+    if kr is not None:
+        try:
+            kr.set_password(APP_NAME, field, plain)
+            return _KEYRING_PREFIX + field
+        except Exception:
+            pass
+    return _local_protect(plain)
+
+
+def _unprotect(field: str, stored: str) -> Optional[str]:
+    if stored.startswith(_DPAPI_PREFIX):
+        return _dpapi_unprotect(stored)
+    if stored.startswith(_KEYRING_PREFIX):
+        kr = _keyring_module()
+        if kr is None:
+            return None
+        try:
+            return kr.get_password(APP_NAME, stored[len(_KEYRING_PREFIX):])
+        except Exception:
+            return None
+    if stored.startswith(_LOCAL_PREFIX):
+        return _local_unprotect(stored)
+    return None
 
 
 def _dpapi_protect(plain: str) -> Optional[str]:
@@ -171,8 +281,19 @@ def _dpapi_unprotect(stored: str) -> Optional[str]:
 
 
 def secrets_encrypted() -> bool:
-    """当前平台能否做 DPAPI 落盘加密（用于设置界面提示）。"""
-    return os.name == "nt"
+    """当前平台是否有可用的加密后端（用于设置界面提示与旧明文升级）。"""
+    return secret_storage_label() != _PLAINTEXT_LABEL
+
+
+def secret_storage_label() -> str:
+    """展示当前密钥存储方式：DPAPI / 系统钥匙串 / 本地密钥文件 / 明文。"""
+    if _is_windows():
+        return "Windows DPAPI"
+    if _keyring_module() is not None:
+        return "系统钥匙串"
+    if _cryptography_available():
+        return "本地密钥文件"
+    return _PLAINTEXT_LABEL
 
 # 可在线下载的推荐 GGUF 模型（普通主机/核显优先，显存占用从低到高）
 # (显示名, 文件名, 下载地址, 大小字节, 显存提示)
@@ -203,6 +324,7 @@ class Settings:
     always_asr: bool = False                   # 跳过字幕直接 ASR
     # --- 专有名词 / 替换词典 ---
     glossary_terms: list = field(default_factory=list)   # 专有名词：喂 whisper prompt + 校对提示
+    glossary_fuzzy: bool = True                          # 同音纠错（SenseVoice 无热词时的兜底）
     replace_rules: list = field(default_factory=list)    # [{"from","to","regex"}]，转写后确定性替换
     # --- LLM ---
     llm_provider: str = "ollama"               # ollama | llamacpp | api
@@ -330,11 +452,11 @@ def load_settings() -> Settings:
             legacy_plaintext = False
             for k in SECRET_FIELDS:
                 v = raw.get(k)
-                if isinstance(v, str) and v.startswith(_DPAPI_PREFIX):
-                    dec = _dpapi_unprotect(v)
+                if isinstance(v, str) and v.startswith(_SECRET_PREFIXES):
+                    dec = _unprotect(k, v)
                     raw[k] = dec if dec is not None else ""
                 elif isinstance(v, str) and v.strip():
-                    # 旧版本留下的明文密钥：读出来，稍后原样重写为 DPAPI 密文
+                    # 旧版本留下的明文密钥：读出来，稍后原样重写为密文
                     legacy_plaintext = True
             s = Settings(**raw)
             # 手改/旧版留下的脏数据不该把整条管线带崩：归一成合法结构
@@ -357,7 +479,7 @@ def save_settings(s: Settings) -> None:
     for k in SECRET_FIELDS:
         v = data.get(k)
         if isinstance(v, str) and v:
-            enc = _dpapi_protect(v)
+            enc = _protect(k, v)
             if enc is not None:
                 data[k] = enc
     f = config_file()

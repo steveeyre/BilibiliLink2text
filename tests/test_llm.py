@@ -279,10 +279,11 @@ class RulesAfterProofreadTest(unittest.TestCase):
         s.replace_rules = [{"from": "比西", "to": "B站", "regex": False}]
         self.assertEqual(llm.proofread(s, make_text(2)), "模型把它写成了B站，还有昇腾。")
 
-    def test_regex_rule_applied(self):
+    def test_regex_rule_not_reapplied_after_proofread(self):
+        # 正则规则无法保证幂等，只在校对前跑一次；校对后只补字面规则
         s = Settings()
         s.replace_rules = [{"from": "比西|昇腾", "to": "B站", "regex": True}]
-        self.assertEqual(llm.proofread(s, make_text(2)), "模型把它写成了B站，还有B站。")
+        self.assertEqual(llm.proofread(s, make_text(2)), "模型把它写成了比西，还有昇腾。")
 
     def test_no_rules_is_identity(self):
         self.assertEqual(llm.proofread(Settings(), make_text(2)),
@@ -294,6 +295,45 @@ class RulesAfterProofreadTest(unittest.TestCase):
         with mock.patch.object(llm, "OpenAI", lambda **kw: object()):
             self.assertEqual(llm.fineproofread(s, make_text(2)),
                              "模型把它写成了B站，还有昇腾。")
+
+
+class MultiWindowChapterizeTest(unittest.TestCase):
+    """章节不再只覆盖前 12000 字：按窗口多次取锚点，尾部也细分。"""
+
+    def setUp(self):
+        self.calls: list[str] = []
+        self.doc = "".join(f"第{i:04d}段内容，讲一些与主题相关的事情。" for i in range(2000))
+
+    def _fake(self, settings, system, user, max_tokens=4096, on_delta=None, cancel=None):
+        self.calls.append(user)
+        first = user[:14]
+        second = user[-40:-20]
+        return (f"### A{len(self.calls)}\n@ {first}\n"
+                f"### B{len(self.calls)}\n@ {second}")
+
+    def test_every_window_is_used_and_tail_is_chaptered(self):
+        windows = (len(self.doc) + llm.CHAPTER_INPUT_LIMIT - 1) // llm.CHAPTER_INPUT_LIMIT
+        self.assertGreaterEqual(windows, 3)
+        with mock.patch.object(llm, "_chat_stream", self._fake):
+            chapters = llm.chapterize(Settings(), self.doc)
+        self.assertGreaterEqual(len(self.calls), 2)
+        self.assertLessEqual(len(self.calls), windows)
+        self.assertGreater(len(chapters), len(self.calls))
+        joined = "".join(c["text"] for c in chapters).replace("\n", "").replace(" ", "")
+        self.assertEqual(joined, self.doc.replace("\n", "").replace(" ", ""))
+        self.assertIn("第1999段", chapters[-1]["text"])
+
+    def test_stops_after_first_window_when_format_ignored(self):
+        calls: list[str] = []
+
+        def fake(settings, system, user, max_tokens=4096, on_delta=None, cancel=None):
+            calls.append(user)
+            return "### 标题\n正文回显"
+
+        with mock.patch.object(llm, "_chat_stream", fake):
+            chapters = llm.chapterize(Settings(), self.doc)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(chapters, [{"title": "标题", "text": "正文回显"}])
 
 
 class ParseTest(unittest.TestCase):

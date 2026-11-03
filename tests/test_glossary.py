@@ -10,8 +10,9 @@ from bili import config as cfg
 from bili.config import Settings
 from bili.glossary import (GlossaryError, Rule, apply_rules, apply_rules_to_segments,
                            build_asr_prompt, build_glossary_hint, format_rules,
-                           format_terms, merge_rules, parse_rules, parse_terms,
-                           rules_from_settings, terms_from_settings)
+                           format_terms, fuzzy_fix_segments, fuzzy_fix_terms,
+                           merge_rules, parse_rules, parse_terms, rules_from_settings,
+                           term_matches, terms_from_settings)
 
 
 class ParseRulesTest(unittest.TestCase):
@@ -190,6 +191,59 @@ class PromptTest(unittest.TestCase):
         hint = build_glossary_hint(["Transformer"])
         self.assertIn("Transformer", hint)
         self.assertIn("不要改写成同音字", hint)
+
+
+class ApplyRulesIdempotencyTest(unittest.TestCase):
+    """正则规则只在校对前跑一次：校对后重复应用不再安全。"""
+
+    def test_regex_skipped_when_include_regex_false(self):
+        rules = [Rule("比西", "B站"), Rule(r"(\d+)块", r"\1 元", True)]
+        out = apply_rules("比西 30块", rules, include_regex=False)
+        self.assertEqual(out, "B站 30块")
+
+    def test_literal_rules_still_apply(self):
+        rules = [Rule("比西", "B站")]
+        self.assertEqual(apply_rules("比西", rules, include_regex=False), "B站")
+
+
+class FuzzyTermTest(unittest.TestCase):
+    """SenseVoice 无热词：用拼音同音同调兜底把错写改回术语。"""
+
+    def test_same_sound_same_tone_replaced(self):
+        self.assertEqual(fuzzy_fix_terms("我们用的是升腾的芯片", ["昇腾"]), "我们用的是昇腾的芯片")
+
+    def test_different_tone_not_replaced(self):
+        # 省(sheng3) 与 昇(sheng1) 不同调，不能乱改
+        self.assertEqual(fuzzy_fix_terms("我们用的是省腾的芯片", ["昇腾"]), "我们用的是省腾的芯片")
+
+    def test_correct_term_untouched(self):
+        self.assertEqual(fuzzy_fix_terms("昇腾很好", ["昇腾"]), "昇腾很好")
+
+    def test_two_char_difference_untouched(self):
+        self.assertEqual(fuzzy_fix_terms("我们用的是高腾", ["昇腾"]), "我们用的是高腾")
+
+    def test_single_char_term_ignored(self):
+        self.assertEqual(fuzzy_fix_terms("甲乙", ["甲"]), "甲乙")
+
+    def test_multiple_occurrences_all_fixed(self):
+        self.assertEqual(fuzzy_fix_terms("升腾和升腾", ["昇腾"]), "昇腾和昇腾")
+
+    def test_matches_requires_single_char_diff(self):
+        self.assertFalse(term_matches("昇腾", "昇腾"))
+        self.assertFalse(term_matches("高腾", "昇腾"))
+        self.assertTrue(term_matches("升腾", "昇腾"))
+
+    def test_segments_keep_timestamps(self):
+        segs = [{"start": 0.0, "end": 1.0, "text": "升腾发布会"}]
+        out = fuzzy_fix_segments(segs, ["昇腾"])
+        self.assertEqual(out[0]["text"], "昇腾发布会")
+        self.assertEqual((out[0]["start"], out[0]["end"]), (0.0, 1.0))
+        self.assertEqual(segs[0]["text"], "升腾发布会")   # 不改原对象
+
+    def test_no_terms_is_identity(self):
+        self.assertEqual(fuzzy_fix_terms("原文", []), "原文")
+        self.assertEqual(fuzzy_fix_segments([{"start": 0, "end": 1, "text": "原文"}], []),
+                         [{"start": 0, "end": 1, "text": "原文"}])
 
 
 if __name__ == "__main__":

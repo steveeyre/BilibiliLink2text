@@ -171,5 +171,79 @@ class ConfigVersionTest(unittest.TestCase):
         self.assertEqual(self._saved(), first)
 
 
+class PortableSecretTest(unittest.TestCase):
+    """非 Windows：优先系统钥匙串，其次本地密钥文件，最后才明文。"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+        self.addCleanup(self._td.cleanup)
+        patches = [mock.patch.object(cfg, "app_dir", lambda: self.tmp),
+                   mock.patch.object(cfg, "_is_windows", lambda: False)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _fake_keyring(self):
+        store: dict[tuple[str, str], str] = {}
+
+        class FakeKeyring:
+            @staticmethod
+            def set_password(service, user, value):
+                store[(service, user)] = value
+
+            @staticmethod
+            def get_password(service, user):
+                return store.get((service, user))
+
+        return FakeKeyring, store
+
+    def test_keyring_preferred_when_available(self):
+        fake, store = self._fake_keyring()
+        with mock.patch.object(cfg, "_keyring_module", lambda: fake):
+            stored = cfg._protect("api_key", "sk-abc")
+            self.assertEqual(stored, "KEYRING:api_key")
+            self.assertEqual(store[(cfg.APP_NAME, "api_key")], "sk-abc")
+            self.assertEqual(cfg._unprotect("api_key", stored), "sk-abc")
+            self.assertEqual(cfg.secret_storage_label(), "系统钥匙串")
+
+    def test_local_fernet_fallback_encrypts(self):
+        try:
+            import cryptography.fernet  # noqa: F401
+        except Exception:
+            self.skipTest("未安装 cryptography")
+        with mock.patch.object(cfg, "_keyring_module", lambda: None):
+            stored = cfg._protect("api_key", "sk-abc")
+            self.assertTrue(stored.startswith("LOCAL:"))
+            self.assertNotIn("sk-abc", stored)
+            self.assertEqual(cfg._unprotect("api_key", stored), "sk-abc")
+            key_file = self.tmp / "data" / "secret.key"
+            self.assertTrue(key_file.exists())
+            self.assertGreaterEqual(len(key_file.read_bytes()), 32)
+
+    def test_no_backend_falls_back_to_plaintext(self):
+        with mock.patch.object(cfg, "_keyring_module", lambda: None), \
+                mock.patch.object(cfg, "_local_protect", lambda plain: None):
+            self.assertIsNone(cfg._protect("api_key", "sk-abc"))
+            self.assertEqual(cfg.secret_storage_label(), "本地密钥文件")
+
+    def test_save_and_load_roundtrip_without_windows(self):
+        try:
+            import cryptography.fernet  # noqa: F401
+        except Exception:
+            self.skipTest("未安装 cryptography")
+        with mock.patch.object(cfg, "_keyring_module", lambda: None):
+            cfg.save_settings(cfg.Settings(api_key="sk-abc", fine_key="fk-def"))
+            raw = (self.tmp / "config.json").read_text(encoding="utf-8")
+            self.assertNotIn("sk-abc", raw)
+            self.assertNotIn("fk-def", raw)
+            got = cfg.load_settings()
+            self.assertEqual(got.api_key, "sk-abc")
+            self.assertEqual(got.fine_key, "fk-def")
+
+    def test_unknown_prefix_treated_as_unreadable(self):
+        self.assertEqual(cfg._unprotect("api_key", "WEIRD:xxx"), None)
+
+
 if __name__ == "__main__":
     unittest.main()

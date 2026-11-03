@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
 
 from .. import glossary
 from ..config import (COOKIE_BROWSERS, SUMMARY_GRANULARITIES,
-                      WHISPER_SIZES, Settings, save_settings, secrets_encrypted)
+                      WHISPER_SIZES, Settings, save_settings,
+                      secret_storage_label, secrets_encrypted)
 from ..local_models import ollama_model_choices
 
 
@@ -73,9 +74,12 @@ class SettingsDialog(QDialog):
         self.glossary_terms.setPlaceholderText("每行一个，例如：\nTransformer\n昇腾\nB站")
         self.glossary_terms.setFixedHeight(84)
         self.glossary_terms.setToolTip(
-            "喂给 whisper.cpp 作为初始提示，并写入 AI 校对提示词，要求原样保留。\n"
-            "SenseVoice 不支持热词，该引擎下只在替换词典与 AI 校对阶段生效。")
+            "喂给 whisper.cpp 作为初始提示，并写入 AI 校对提示词，要求原样保留。")
         gl.addWidget(self.glossary_terms)
+        self.glossary_fuzzy = QCheckBox("同音纠错（把与专有名词同音同调的错写自动改回）")
+        self.glossary_fuzzy.setToolTip(
+            "SenseVoice 不支持热词，这里用拼音比对把“升腾”这类同音错写改回“昇腾”。\n"
+            "只作用于转写原文；担心误改可以关掉。")
         rules_label = QLabel("替换词典（每行：错误词 => 正确词）")
         gl.addWidget(rules_label)
         self.replace_rules = QPlainTextEdit()
@@ -83,8 +87,8 @@ class SettingsDialog(QDialog):
             "比西 => B站\n/昇腾|升腾/ => 昇腾\n# 以 # 开头为注释")
         self.replace_rules.setFixedHeight(92)
         self.replace_rules.setToolTip(
-            "转写完成后、AI 校对之后各按从上到下的顺序执行一次，时间戳不受影响。\n"
-            "字面规则幂等；/正则/ => 替换 支持 \\1 反向引用，但请注意替换结果不要再匹配源模式。")
+            "转写完成后按顺序执行一遍（校对后再执行一次字面规则）。时间戳不受影响。\n"
+            "字面规则可重复执行；/正则/ => 替换 只在校对前生效，避免反复替换。")
         gl.addWidget(self.replace_rules)
         io_row = QHBoxLayout()
         import_btn = QPushButton("导入…")
@@ -211,7 +215,7 @@ class SettingsDialog(QDialog):
         f.addRow("", self.llamacpp_kv_q8)
         f.addRow(self.test_btn)
         if secrets_encrypted():
-            enc_tip = QLabel("API Key 等敏感信息经 Windows DPAPI 本机加密后写入 config.json")
+            enc_tip = QLabel(f"API Key 等敏感信息经 {secret_storage_label()} 加密后写入 config.json")
             enc_tip.setWordWrap(True)
             enc_tip.setProperty("role", "hint")
             f.addRow("", enc_tip)
@@ -481,6 +485,7 @@ class SettingsDialog(QDialog):
         self.always_asr.setChecked(s.always_asr)
         self.glossary_terms.setPlainText(
             glossary.format_terms(glossary.terms_from_settings(s.glossary_terms)))
+        self.glossary_fuzzy.setChecked(getattr(s, "glossary_fuzzy", True))
         self.replace_rules.setPlainText(
             glossary.format_rules(glossary.rules_from_settings(s.replace_rules)))
         provider = s.llm_provider if s.llm_provider in ("ollama", "llamacpp", "api") else "ollama"
@@ -575,6 +580,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "替换词典有误", str(e))
             return
         s.glossary_terms = glossary.parse_terms(self.glossary_terms.toPlainText())
+        s.glossary_fuzzy = self.glossary_fuzzy.isChecked()
         s.replace_rules = [r.to_dict() for r in rules]
         s.llm_provider = self.llm_provider.currentData() or "ollama"
         s.ollama_base = self.ollama_base.text().strip() or s.ollama_base

@@ -13,7 +13,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Iterable, Optional, Sequence
+
+try:   # 可选依赖：没有 pypinyin 时同音纠错自动关闭（宁可不改，也不乱改）
+    from pypinyin import Style, lazy_pinyin
+except Exception:   # pragma: no cover - 仅在精简环境触发
+    Style = None
+    lazy_pinyin = None
 
 # 提示词里术语总长度上限：whisper 的 initial prompt 只吃 224 token 左右，
 # 超长会被静默截断，反而不如少给几个。
@@ -162,13 +169,16 @@ def terms_from_settings(raw: object) -> list[str]:
     return out
 
 
-def apply_rules(text: str, rules: Sequence[Rule]) -> str:
+def apply_rules(text: str, rules: Sequence[Rule], include_regex: bool = True) -> str:
+    """按顺序应用规则。include_regex=False 时只跑字面规则（保证重复执行安全）。"""
     if not text:
         return text
     for rule in rules:
         if not rule.src:
             continue
         if rule.regex:
+            if not include_regex:
+                continue
             try:
                 text = re.sub(rule.src, rule.dst, text)
             except re.error:
@@ -189,6 +199,61 @@ def apply_rules_to_segments(segments: Sequence[dict], rules: Sequence[Rule]) -> 
             continue
         item = dict(seg)
         item["text"] = text
+        out.append(item)
+    return out
+
+
+@lru_cache(maxsize=8192)
+def _tone_pinyin(ch: str) -> tuple[str, ...]:
+    if lazy_pinyin is None or not ch.strip():
+        return ()
+    try:
+        return tuple(lazy_pinyin(ch, style=Style.TONE3, errors=lambda s: [""]))
+    except Exception:
+        return ()
+
+
+def term_matches(window: str, term: str) -> bool:
+    """等长、仅一处不同、且该字同音同调。用于 SenseVoice 等无热词引擎的兜底。"""
+    if lazy_pinyin is None or len(window) != len(term) or window == term:
+        return False
+    diff = [i for i, (x, y) in enumerate(zip(window, term)) if x != y]
+    if len(diff) != 1:
+        return False
+    i = diff[0]
+    a, b = _tone_pinyin(window[i]), _tone_pinyin(term[i])
+    return bool(a) and a == b
+
+
+def fuzzy_fix_terms(text: str, terms: Sequence[str], max_chars: int = 200_000) -> str:
+    """把与术语“差一个字但同音同调”的写法改回术语（只用于 ASR 原文）。"""
+    if not text or not terms or len(text) > max_chars:
+        return text
+    for term in sorted({t.strip() for t in terms if t and len(t.strip()) >= 2},
+                       key=len, reverse=True):
+        n = len(term)
+        i = 0
+        while i <= len(text) - n:
+            window = text[i:i + n]
+            if window == term:
+                i += n
+                continue
+            if term_matches(window, term):
+                text = text[:i] + term + text[i + n:]
+                i += n
+                continue
+            i += 1
+    return text
+
+
+def fuzzy_fix_segments(segments: Sequence[dict], terms: Sequence[str]) -> list[dict]:
+    """同音纠错版 apply_rules_to_segments：时间戳不变，不删段。"""
+    if not terms:
+        return list(segments)
+    out: list[dict] = []
+    for seg in segments:
+        item = dict(seg)
+        item["text"] = fuzzy_fix_terms(seg.get("text") or "", terms)
         out.append(item)
     return out
 

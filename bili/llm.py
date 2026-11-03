@@ -11,7 +11,7 @@ from openai import OpenAI
 from .config import Settings
 from . import glossary
 from . import llm_server
-from .textutil import slice_by_anchors, split_chunks
+from .textutil import locate_anchors, slice_by_anchors, split_chunks
 
 CHUNK_LIMIT = 1800
 CHAPTER_MIN_LEN = 2500
@@ -179,12 +179,13 @@ def _proofread_workers(settings: Settings) -> int:
 def _apply_replace_rules(settings: Settings, text: str) -> str:
     """校对后再兜一次替换词典：提示词约束很软，模型常把术语“改回”同音字。
 
-    字面规则幂等；正则规则若替换结果再次匹配源模式会被重复替换（设置页已提示）。
+    只应用字面规则。字面替换幂等，重复执行不会改变结果；正则规则无法保证幂等
+    （替换结果可能再次匹配源模式），因此只在校对前执行一次。
     """
     rules = glossary.rules_from_settings(settings.replace_rules)
     if not rules or not text:
         return text
-    return glossary.apply_rules(text, rules)
+    return glossary.apply_rules(text, rules, include_regex=False)
 
 
 def proofread(settings: Settings, raw_text: str,
@@ -244,6 +245,8 @@ CHAPTER_SYSTEM = (
 )
 
 CHAPTER_MAX_TOKENS = 4096   # 锚点格式只需几百 token；余量留给不守格式的模型回退到正文
+CHAPTER_MAX_WINDOWS = 20   # 安全上限：约 24 万字，正常视频用不到；避免异常文本无限调用
+CHAPTER_MIN_WINDOW = 400   # 尾部不足这么多字就不再开新窗口
 ANCHOR_RE = re.compile(r"^[@＠]\s*(.+)$")
 CHAPTER_TITLE_RE = re.compile(r"^#{1,6}\s*(.+)$")
 
@@ -286,31 +289,55 @@ def parse_echo_chapters(out: str) -> Optional[list[dict]]:
 def chapterize(settings: Settings, proofread: str,
                progress: Optional[Callable[[float], None]] = None,
                cancel: Optional[threading.Event] = None) -> Optional[list[dict]]:
+    """分段取锚点、全文切分：整个文稿都能分章，而不是只看开头 12000 字。"""
     if len(proofread) < CHAPTER_MIN_LEN:
         return None
-    text = proofread[:CHAPTER_INPUT_LIMIT]
-    received = 0
+    windows = max(1, min(CHAPTER_MAX_WINDOWS,
+                          (len(proofread) + CHAPTER_INPUT_LIMIT - 1) // CHAPTER_INPUT_LIMIT))
+    anchors: list[tuple[str, str]] = []
+    cursor = 0
+    last_out = ""
+    for w in range(windows):
+        _check_cancel(cancel)
+        window = proofread[cursor:cursor + CHAPTER_INPUT_LIMIT]
+        if len(window.strip()) < CHAPTER_MIN_WINDOW:
+            break
+        received = 0
 
-    def on_delta(delta: str):
-        nonlocal received
-        received += len(delta)
-        if progress:
-            progress(min(0.98, received / 800))  # 锚点输出很短，按预期长度估进度
+        def on_delta(delta: str, _w: int = w) -> None:
+            nonlocal received
+            received += len(delta)
+            if progress:
+                # 锚点输出很短，按每条几百字估进度
+                progress(min(0.98, (_w + min(0.95, received / 800)) / windows))
 
-    try:
-        out = _chat_stream(settings, CHAPTER_SYSTEM, text,
-                           max_tokens=CHAPTER_MAX_TOKENS, on_delta=on_delta, cancel=cancel)
-    except LLMError:
-        return None
+        try:
+            out = _chat_stream(settings, CHAPTER_SYSTEM, window,
+                               max_tokens=CHAPTER_MAX_TOKENS, on_delta=on_delta, cancel=cancel)
+        except LLMError:
+            break
+        last_out = out
+        got = parse_anchor_chapters(out)
+        if not got:
+            break   # 模型不守锚点格式：不再继续窗口，走回退解析
+        anchors.extend(got)
+        located = locate_anchors(proofread, anchors)
+        if not located:
+            break
+        new_cursor = located[-1][1] + 1
+        if new_cursor <= cursor:      # 锚点没推进：防死循环
+            break
+        cursor = new_cursor
+        if len(proofread) - cursor < CHAPTER_MIN_WINDOW:
+            break
     if progress:
         progress(1.0)
     # 首选锚点切分：正文由程序从 proofread 切出，覆盖率 100%，不受输出 token 上限影响。
-    # 锚点只可能落在送入模型的前缀里，前缀之后的正文并入最后一章（不丢字，只是不再细分）。
-    sliced = slice_by_anchors(proofread, parse_anchor_chapters(out))
+    sliced = slice_by_anchors(proofread, anchors)
     if sliced:
         return sliced
     # 模型没按锚点格式输出：退回回显解析，交给 ensure_chapters_cover 兜底
-    return parse_echo_chapters(out)
+    return parse_echo_chapters(last_out)
 
 
 def summarize(settings: Settings, proofread: str, granularity: str,

@@ -140,14 +140,8 @@ def _find_anchor(norm: str, mapping: list[int], probe: str, cursor: int) -> int:
     return -1
 
 
-def slice_by_anchors(doc: str, anchors: list[tuple[str, str]],
-                     min_chapters: int = 2) -> list[dict]:
-    """按 (章节标题, 本章开头片段) 在原文上切分，结构上保证不丢正文。
-
-    模型只给锚点、不回显全文，每章正文都是 doc 的连续切片：首章从 0 开始、
-    末章到文末，拼接结果与 doc 一致。锚点定位不到时跳过该章（内容并入前章）；
-    有效章节不足 min_chapters 时返回 []，由调用方回退全文。
-    """
+def locate_anchors(doc: str, anchors: list[tuple[str, str]]) -> list[tuple[str, int]]:
+    """把 (章节标题, 开头片段) 定位到原文下标；跳过定位不到或乱序的条目。"""
     if not doc or not anchors:
         return []
     strict, strict_map = _norm_with_map(doc)
@@ -168,6 +162,20 @@ def slice_by_anchors(doc: str, anchors: list[tuple[str, str]],
             continue
         starts.append((title, pos))
         cursor = pos + 1
+    return starts
+
+
+def slice_by_anchors(doc: str, anchors: list[tuple[str, str]],
+                     min_chapters: int = 2) -> list[dict]:
+    """按 (章节标题, 本章开头片段) 在原文上切分，结构上保证不丢正文。
+
+    模型只给锚点、不回显全文，每章正文都是 doc 的连续切片：首章从 0 开始、
+    末章到文末，拼接结果与 doc 一致。锚点定位不到时跳过该章（内容并入前章）；
+    有效章节不足 min_chapters 时返回 []，由调用方回退全文。
+    """
+    if not doc or not anchors:
+        return []
+    starts = locate_anchors(doc, anchors)
     if len(starts) < min_chapters:
         return []
     chapters: list[dict] = []
